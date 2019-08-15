@@ -195,6 +195,8 @@ static bool send_rtp_connect(struct mncc_call_leg *leg, struct call_leg *other)
 	mncc.callref = leg->callref;
 	mncc.addr = other->addr;
 	mncc.payload_type = other->payload_type;
+
+	OSMO_STRLCPY_ARRAY(mncc.sdp, other->sdp);
 	/*
 	 * FIXME: mncc.payload_msg_type should already be compatible.. but
 	 * payload_type should be different..
@@ -408,6 +410,8 @@ static void check_rtp_connect(struct mncc_connection *conn, const char *buf, int
 		return;
 	}
 
+	call_leg_update_sdp(&leg->base, rtp->sdp);
+
 	/* extract information about where the RTP is */
 	if (rtp->addr.ss_family != AF_UNSPEC ||
 	    osmo_sockaddr_port((const struct sockaddr *)&rtp->addr) != 0 ||
@@ -446,6 +450,8 @@ static void check_rtp_create(struct mncc_connection *conn, const char *buf, int 
 	leg->base.addr = rtp->addr;
 	leg->base.payload_type = rtp->payload_type;
 	leg->base.payload_msg_type = rtp->payload_msg_type;
+
+	call_leg_update_sdp(&leg->base, rtp->sdp);
 
 	/* TODO.. now we can continue with the call */
 	LOGP(DMNCC, LOGL_INFO,
@@ -519,6 +525,8 @@ static void check_setup(struct mncc_connection *conn, const char *buf, int rc)
 	}
 
 	/* TODO.. bearer caps and better audio handling */
+	printf("MNCC_SETUP_IND SDP: <<\n%s>>\n", data->sdp);
+
 	if (!continue_setup(conn, data)) {
 		LOGP(DMNCC, LOGL_ERROR,
 			"MNCC screening parameters failed leg(%u)\n", data->callref);
@@ -562,6 +570,8 @@ static void check_setup(struct mncc_connection *conn, const char *buf, int rc)
 		leg->base.call->gcr_present = true;
 		leg->base.call->gcr = gcr;
 	}
+
+	call_leg_update_sdp(&leg->base, data->sdp);
 
 	LOGP(DMNCC, LOGL_INFO,
 		"Created call(%u) with MNCC leg(%u) IMSI(%.16s)\n",
@@ -672,6 +682,8 @@ static void check_stp_cmpl_ind(struct mncc_connection *conn, const char *buf, in
 	if (!leg)
 		return;
 
+	call_leg_update_sdp(&leg->base, data->sdp);
+
 	LOGP(DMNCC, LOGL_INFO, "leg(%u) is now connected.\n", leg->callref);
 	stop_cmd_timer(leg, MNCC_SETUP_COMPL_IND);
 	leg->state = MNCC_CC_CONNECTED;
@@ -706,6 +718,8 @@ static void check_cnf_ind(struct mncc_connection *conn, const char *buf, int rc)
 	if (!leg)
 		return;
 
+	call_leg_update_sdp(&leg->base, data->sdp);
+
 	LOGP(DMNCC, LOGL_DEBUG,
 		"leg(%u) confirmed. creating RTP socket.\n",
 		leg->callref);
@@ -723,6 +737,8 @@ static void check_alrt_ind(struct mncc_connection *conn, const char *buf, int rc
 	leg = find_leg(conn, buf, rc, &data);
 	if (!leg)
 		return;
+
+	call_leg_update_sdp(&leg->base, data->sdp);
 
 	LOGP(DMNCC, LOGL_DEBUG,
 		"leg(%u) is alerting.\n", leg->callref);
@@ -802,6 +818,8 @@ static void check_stp_cnf(struct mncc_connection *conn, const char *buf, int rc)
 	if (!leg)
 		return;
 
+	call_leg_update_sdp(&leg->base, data->sdp);
+
 	LOGP(DMNCC, LOGL_DEBUG, "leg(%u) setup completed\n", leg->callref);
 
 	other_leg = call_leg_other(&leg->base);
@@ -831,6 +849,8 @@ static void check_dtmf_start(struct mncc_connection *conn, const char *buf, int 
 	if (!leg)
 		return;
 
+	call_leg_update_sdp(&leg->base, data->sdp);
+
 	LOGP(DMNCC, LOGL_DEBUG, "leg(%u) DTMF key=%c\n", leg->callref, data->keypad);
 
 	other_leg = call_leg_other(&leg->base);
@@ -852,6 +872,8 @@ static void check_dtmf_stop(struct mncc_connection *conn, const char *buf, int r
 	leg = find_leg(conn, buf, rc, &data);
 	if (!leg)
 		return;
+
+	call_leg_update_sdp(&leg->base, data->sdp);
 
 	LOGP(DMNCC, LOGL_DEBUG, "leg(%u) DTMF key=%c\n", leg->callref, data->keypad);
 
@@ -943,11 +965,18 @@ int mncc_create_remote_leg(struct mncc_connection *conn, struct call *call)
 		msgb_free(msg);
 	}
 
+	/* The call->initial leg is a SIP call leg that starts an MT call. There was SDP received in the SIP INVITE that
+	 * started this call. This here will be the call->remote, always forwarding the SDP that came in on
+	 * call->initial. */
+	if (call->initial) {
+		OSMO_STRLCPY_ARRAY(mncc.sdp, call->initial->sdp);
+		printf("call->initial->sdp == %s\n", call->initial->sdp);
+	} else
+		printf("no call->initial\n");
+
 	/*
 	 * TODO/FIXME:
-	 *  - Determine/request channel based on offered audio codecs
 	 *  - Screening, redirect?
-	 *  - Synth. the bearer caps based on codecs?
 	 */
 	rc = mncc_write(conn, &mncc);
 	if (rc != sizeof(mncc)) {

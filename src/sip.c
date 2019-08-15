@@ -46,6 +46,12 @@ static void sip_dtmf_call(struct call_leg *_leg, int keypad);
 static void sip_hold_call(struct call_leg *_leg);
 static void sip_retrieve_call(struct call_leg *_leg);
 
+static const char *sip_get_sdp(const sip_t *sip)
+{
+	if (!sip || !sip->sip_payload)
+		return NULL;
+	return sip->sip_payload->pl_data;
+}
 
 /* Find a SIP Call leg by given nua_handle */
 static struct sip_call_leg *sip_find_leg(nua_handle_t *nh)
@@ -76,8 +82,10 @@ static void call_progress(struct sip_call_leg *leg, const sip_t *sip, int status
 		return;
 
 	/* Extract SDP for session in progress with matching codec */
+	/*
 	if (status == 183)
 		sdp_extract_sdp(leg, sip, false);
+	*/
 
 	LOGP(DSIP, LOGL_INFO, "leg(%p) is now progressing.\n", leg);
 	other->ring_call(other);
@@ -94,12 +102,14 @@ static void call_connect(struct sip_call_leg *leg, const sip_t *sip)
 		return;
 	}
 
+	/*
 	if (!sdp_extract_sdp(leg, sip, false)) {
 		LOGP(DSIP, LOGL_ERROR, "leg(%p) incompatible audio, releasing\n", leg);
 		nua_cancel(leg->nua_handle, TAG_END());
 		other->release_call(other);
 		return;
 	}
+	*/
 
 	LOGP(DSIP, LOGL_INFO, "leg(%p) is now connected(%s).\n", leg, sip->sip_call_id->i_id);
 	leg->state = SIP_CC_CONNECTED;
@@ -129,20 +139,8 @@ static void new_call(struct sip_agent *agent, nua_handle_t *nh,
 		unknown_header = unknown_header->un_next;
 	}
 
-	if (!sdp_screen_sdp(sip)) {
-		LOGP(DSIP, LOGL_ERROR, "No supported codec.\n");
-		nua_respond(nh, SIP_406_NOT_ACCEPTABLE, TAG_END());
-		nua_handle_destroy(nh);
-		return;
-	}
-
 	call = call_sip_create();
-	if (!call) {
-		LOGP(DSIP, LOGL_ERROR, "No supported codec.\n");
-		nua_respond(nh, SIP_500_INTERNAL_SERVER_ERROR, TAG_END());
-		nua_handle_destroy(nh);
-		return;
-	}
+	OSMO_ASSERT(call);
 
 	/* Decode Decode the Global Call Reference (if present) */
 	if (xgcr_hdr_present) {
@@ -171,6 +169,8 @@ static void new_call(struct sip_agent *agent, nua_handle_t *nh,
 	leg->state = SIP_CC_DLG_CNFD;
 	leg->dir = SIP_DIR_MO;
 
+
+
 	/*
 	 * FIXME/TODO.. we need to select the codec at some point. But it is
 	 * not this place. It starts with the TCH/F vs. TCH/H selection based
@@ -178,6 +178,7 @@ static void new_call(struct sip_agent *agent, nua_handle_t *nh,
 	 * are GSM related... and do not belong here. Just pick the first codec
 	 * so the IP address, port and payload type is set.
 	 */
+	/*
 	if (!sdp_extract_sdp(leg, sip, true)) {
 		LOGP(DSIP, LOGL_ERROR, "leg(%p) no audio, releasing\n", leg);
 		nua_respond(nh, SIP_406_NOT_ACCEPTABLE, TAG_END());
@@ -185,6 +186,7 @@ static void new_call(struct sip_agent *agent, nua_handle_t *nh,
 		call_leg_release(&leg->base);
 		return;
 	}
+	*/
 	LOGP(DSIP, LOGL_INFO, "SDP Extracted: IP=(%s) PORT=(%u) PAYLOAD=(%u).\n",
 		               osmo_sockaddr_ntop((const struct sockaddr *)&leg->base.addr, ip_addr),
 		               osmo_sockaddr_port((const struct sockaddr *)&leg->base.addr),
@@ -200,6 +202,8 @@ static void new_call(struct sip_agent *agent, nua_handle_t *nh,
 	leg->nua_handle = nh;
 	nua_handle_bind(nh, leg);
 	leg->sdp_payload = talloc_strdup(leg, sip->sip_payload->pl_data);
+
+	call_leg_update_sdp(&leg->base, sip_get_sdp(sip));
 
 	app_route_call(call,
 			talloc_strdup(leg, from),
@@ -240,6 +244,8 @@ static void sip_handle_reinvite(struct sip_call_leg *leg, nua_handle_t *nh, cons
 	LOGP(DSIP, LOGL_DEBUG, "pre re-INVITE have IP:port (%s:%u)\n",
 	     osmo_sockaddr_ntop((struct sockaddr*)&prev_addr, ip_addr),
 	     osmo_sockaddr_port((struct sockaddr*)&prev_addr));
+
+	call_leg_update_sdp(&leg->base, sip_get_sdp(sip));
 
 	if (mode == sdp_sendonly) {
 		/* SIP side places call on HOLD */
@@ -360,6 +366,8 @@ void nua_callback(nua_event_t event, int status, char const *phrase, nua_t *nua,
 		struct sip_call_leg *leg;
 		leg = (struct sip_call_leg *) hmagic;
 
+		call_leg_update_sdp(&leg->base, sip_get_sdp(sip));
+
 		/* MT call is moving forward */
 
 		/* The dialogue is now confirmed */
@@ -396,8 +404,10 @@ void nua_callback(nua_event_t event, int status, char const *phrase, nua_t *nua,
 		 * respond to the re-INVITE query. */
 		if (sip->sip_payload && sip->sip_payload->pl_data) {
 			struct sip_call_leg *leg = sip_find_leg(nh);
-			if (leg)
+			if (leg) {
+				call_leg_update_sdp(&leg->base, sip_get_sdp(sip));
 				sip_handle_reinvite(leg, nh, sip);
+			}
 		}
 	} else if (event == nua_r_bye || event == nua_r_cancel) {
 		/* our bye or hang up is answered */
@@ -423,9 +433,10 @@ void nua_callback(nua_event_t event, int status, char const *phrase, nua_t *nua,
 
 		if (status == 100) {
 			struct sip_call_leg *leg = sip_find_leg(nh);
-			if (leg)
+			if (leg) {
+				call_leg_update_sdp(&leg->base, sip_get_sdp(sip));
 				sip_handle_reinvite(leg, nh, sip);
-			else
+			} else
 				new_call((struct sip_agent *) magic, nh, sip);
 		}
 	} else if (event == nua_i_cancel) {
@@ -641,6 +652,9 @@ static int send_invite(struct sip_agent *agent, struct sip_call_leg *leg,
 			LOGP(DSIP, LOGL_ERROR, "Failed to encode GCR for leg(%p)\n", leg);
 		msgb_free(msg);
 	}
+
+	LOGP(DSIP, LOGL_DEBUG, "Will send INVITE with SDP: %s\n",
+	     sdp);
 
 	leg->state = SIP_CC_INITIAL;
 	leg->dir = SIP_DIR_MT;
