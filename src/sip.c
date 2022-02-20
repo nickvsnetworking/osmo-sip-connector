@@ -627,6 +627,9 @@ static int send_invite(struct sip_agent *agent, struct sip_call_leg *leg,
 				called_num,
 				agent->app->sip.remote_addr,
 				agent->app->sip.remote_port);
+	char *contact = talloc_asprintf(leg, "sip:%s:%d",
+					agent->app->sip.local_addr,
+					agent->app->sip.local_port);
 	char *sdp = sdp_create_file(leg, other, sdp_sendrecv);
 
 	/* Encode the Global Call Reference (if present) */
@@ -647,6 +650,7 @@ static int send_invite(struct sip_agent *agent, struct sip_call_leg *leg,
 	nua_invite(leg->nua_handle,
 			SIPTAG_FROM_STR(from),
 			SIPTAG_TO_STR(to),
+			SIPTAG_CONTACT_STR(contact),
 			NUTAG_MEDIA_ENABLE(0),
 			SIPTAG_CONTENT_TYPE_STR("application/sdp"),
 			TAG_IF(x_gcr, SIPTAG_HEADER_STR(x_gcr)),
@@ -656,6 +660,7 @@ static int send_invite(struct sip_agent *agent, struct sip_call_leg *leg,
 	leg->base.call->remote = &leg->base;
 	talloc_free(from);
 	talloc_free(to);
+	talloc_free(contact);
 	talloc_free(sdp);
 	talloc_free(x_gcr);
 	return 0;
